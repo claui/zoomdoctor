@@ -1,0 +1,8 @@
+{
+  "files.associations": {
+    "**/bin/*": "shellscript"
+  },
+  "files.exclude": {
+    "**/.git": true
+  }
+}
