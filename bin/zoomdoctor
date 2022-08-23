@@ -5,6 +5,9 @@ set -eu -o pipefail;
 SPEAKERS_NAME='Lala'
 SPEAKERS_MAC_ADDRESS='4C:87:5D:A7:1E:8A'
 
+FALLBACK_SINK_NAME='Built-in Audio Analog Stereo'
+FALLBACK_PORT_TYPE='Headphones'
+
 printf >&2 -- '- %s … ' \
   "Asserting that pulseaudio.service is active"
 if systemctl is-active -q --user pulseaudio; then
@@ -13,6 +16,8 @@ else
   echo >&2 'FAILED'
   exit 1
 fi
+
+sinks_json="$(pactl -f json list sinks)"
 
 printf >&2 -- '- %s … ' \
   "Asserting that ${SPEAKERS_NAME} is known to the Bluetooth stack"
@@ -28,7 +33,7 @@ fi
 
 printf >&2 -- '- %s … ' \
   "Asserting that ${SPEAKERS_NAME} is paired"
-if bluetoothctl paired-devices \
+if bluetoothctl devices Paired \
   | cut -d ' ' -f 2 \
   | grep -q "${SPEAKERS_MAC_ADDRESS}"
 then
@@ -46,17 +51,52 @@ if bluetoothctl info "${SPEAKERS_MAC_ADDRESS}" \
 then
   echo >&2 'OK'
 else
-  echo >&2 'FAILED'
-  exit 1
+  echo >&2 'WARNING: not found'
+  printf >&2 -- '- %s\n' \
+    'Note: trying fallback; fix Bluetooth to avoid this'
+  require_headphones=1
 fi
 
-printf >&2 -- '- %s … ' \
-  "Asserting that ${SPEAKERS_NAME} is known to PulseAudio"
-if pactl list short cards | cut -f 2 | cut -d . -f 2 | tr _ : \
-  | grep -q "${SPEAKERS_MAC_ADDRESS}"
-then
-  echo >&2 'OK'
-else
-  echo >&2 'FAILED'
-  exit 1
+if [[ "${require_headphones:-0}" -eq '0' ]]; then
+  printf >&2 -- '- %s … ' \
+    "Asserting that ${SPEAKERS_NAME} is known to PulseAudio"
+  if pactl list short cards | cut -f 2 | cut -d . -f 2 | tr _ : \
+    | grep -q "${SPEAKERS_MAC_ADDRESS}"
+  then
+    echo >&2 'OK'
+  else
+    echo >&2 'WARNING: not found'
+    printf >&2 -- '- %s\n' \
+      'Note: trying fallback; fix Bluetooth to avoid this'
+    require_headphones=1
+  fi
+fi
+
+if [[ "${require_headphones:-0}" -ne '0' ]]; then
+  printf >&2 -- '- %s … ' \
+    "Asserting that ${FALLBACK_SINK_NAME} is known to PulseAudio"
+  target_port="$(
+    jq -r <<< "${sinks_json}" \
+      --arg sinkName "${FALLBACK_SINK_NAME}" \
+      --arg portType "${FALLBACK_PORT_TYPE}" '.[]
+        | select(.description == $sinkName)
+        | .ports[]
+        | select(.type == $portType)
+        | .name
+    '
+  )"
+  if [[ "${target_port}" ]]; then
+    echo >&2 'OK'
+  else
+    echo >&2 'FAILED'
+    printf >&2 -- '- %s\n' 'Note: connect headphones to jack.'
+    exit 1
+  fi
+  if [[ "${target_port}" == 'analog-output-headphones' ]]; then
+    echo >&2 'OK'
+  else
+    echo >&2 "FAILED: cable connected but configured as '${target_port}'"
+    printf >&2 -- '- %s\n' 'Note: connect headphones to jack.'
+    exit 1
+  fi
 fi
